@@ -1,0 +1,133 @@
+---
+- name: Deploy Latest Artifact to IIS
+  hosts: windows
+  gather_facts: no
+ 
+  vars:
+    site_name: dhyey-devops
+    latest_artifact_path: 'C:\\Latest_dhyey_devops'
+    iis_deploy_path: "C:\\inetpub\\wwwroot\\{{ site_name }}"
+    port_for_site: 99
+    project_version: 1.0.0
+ 
+  tasks:
+ 
+    - name: Delete Previous Artifact Files from Server
+      win_file:
+        path: "{{ latest_artifact_path }}"
+        state: absent
+ 
+    - name: Create Artifact Directory on Server
+      win_file:
+        path: "{{ latest_artifact_path }}"
+        state: directory
+ 
+    - name: Create Artifact Directory on localhost (Linux)
+      file:
+        path: /tmp/Latest_Artifacts
+        state: directory
+      delegate_to: localhost
+ 
+    - name: Download Latest ZIP Artifact from Nexus
+      shell: |
+        curl -s "http://192.168.0.113:8081/service/rest/v1/search/assets?sort=version&direction=desc&repository=Devops&format=maven2&group=Dev&name=country-viewer&version=1.0" \
+        | grep -o 'downloadUrl[^,]*\.zip' \
+        | head -n 1 \
+        | cut -d '"' -f 3 \
+        | xargs curl -o /tmp/Latest_Artifacts/artifact.zip
+      args:
+        chdir: /tmp/Latest_Artifacts
+      delegate_to: localhost
+ 
+    - name: Copy ZIP Artifact from Localhost to Windows Server
+      win_copy:
+        src: /tmp/Latest_Artifacts
+        dest: "{{ latest_artifact_path }}"
+      # delegate_to: localhost
+ 
+    - name: Delete ZIP from Localhost after successfully copying
+      file:
+        path: /tmp/Latest_Artifacts
+        state: absent
+      delegate_to: localhost
+ 
+    - name: Ensure IIS Deployment Path Exists
+      win_file:
+        path: "{{ iis_deploy_path }}"
+        state: directory
+ 
+    - name: Create Custom Application Pool
+      win_iis_webapppool:
+        name: "{{ site_name }}"
+        state: started
+ 
+    - name: Create the IIS site for Deployment
+      win_iis_website:
+        name: "{{ site_name }}"
+        state: started
+        physical_path: "{{ iis_deploy_path }}"
+        port: "{{ port_for_site }}"
+        application_pool: "{{ site_name }}"
+ 
+    - name: Stop IIS Application Pool
+      win_shell: |
+        Import-Module WebAdministration
+        Stop-WebAppPool -Name "{{ site_name }}"
+      register: stop_iis_result
+ 
+    - name: Verify IIS Application Pool Stopped Successfully
+      debug:
+        msg: "IIS Application stopped successfully"
+      when: stop_iis_result.rc == 0
+ 
+    - name: Remove Old Files from IIS Deployment Directory
+      win_file:
+        path: "{{ iis_deploy_path }}"
+        state: absent
+ 
+    # - name: Find ZIP Artifact in Server Directory
+    #   win_find:
+    #     paths: "{{ latest_artifact_path }}"
+    #     patterns: '*.zip'
+    #   register: zip_files
+ 
+#     - name: Extract ZIP Artifact to IIS Deployment Directory
+#       win_unzip:
+#         # src: "{{ zip_files.files[0].path }}"
+#         src: 'C:\\Latest_dhyey_devops\Latest_Artifacts\artifact.zip'
+#         dest: "{{ iis_deploy_path }}"
+#       # when: zip_files.files | length > 0
+# 
+#     - name: Copy Country-View File to IIS Deployment Directory
+#       win_copy:
+#         src: "{{ latest_artifact_path }}\\Latest_Artifacts\\artifact.zip\\dist\\country-view"
+#         dest: "{{ iis_deploy_path }}"
+#         remote_src: yes
+ 
+    - name: Create a temporary directory for extraction
+      win_file:
+        path: 'C:\\Temp\\extracted_artifacts'
+        state: directory
+    
+    - name: Extract ZIP Artifact to Temporary Directory
+      win_unzip:
+        src: 'C:\\Latest_dhyey_devops\\Latest_Artifacts\\artifact.zip'
+        dest: 'C:\\Temp\\extracted_artifacts'
+    
+    - name: Copy Country-View Folder to IIS Deployment Directory
+      win_copy:
+        src: 'C:\\Temp\\extracted_artifacts\\dist\\country-view\\'
+        dest: "{{ iis_deploy_path }}"
+        remote_src: yes
+    
+    - name: Clean up temporary directory
+      win_file:
+        path: 'C:\\Temp\\extracted_artifacts'
+        state: absent
+
+
+    - name: Restart IIS Application Pool
+      win_shell: |
+        Import-Module WebAdministration
+        Start-WebAppPool -Name "{{ site_name }}"
+        # register: restart_iis_result
